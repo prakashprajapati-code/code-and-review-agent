@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "bridge": "node bridge.mjs",
+    "bridge": "node ./bridge/bridge.mjs",
     "dev": "OPENCODE_CONFIG=./opencode.developer.json opencode --port 4096",
     "review": "OPENCODE_CONFIG=./opencode.reviewer.json opencode --port 4097",
     "dev:server": "OPENCODE_CONFIG=./opencode.developer.json opencode serve --port 4096 --hostname 127.0.0.1",
