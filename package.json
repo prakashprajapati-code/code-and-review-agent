@@ -1,0 +1,20 @@
+{
+  "name": "opencode-review-bridge",
+  "version": "2.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "bridge": "node bridge.mjs",
+    "dev": "OPENCODE_CONFIG=./opencode.developer.json opencode --port 4096",
+    "review": "OPENCODE_CONFIG=./opencode.reviewer.json opencode --port 4097",
+    "dev:server": "OPENCODE_CONFIG=./opencode.developer.json opencode serve --port 4096 --hostname 127.0.0.1",
+    "dev:tui": "opencode attach http://127.0.0.1:4096",
+    "review:server": "OPENCODE_CONFIG=./opencode.reviewer.json opencode serve --port 4097 --hostname 127.0.0.1",
+    "review:tui": "opencode attach http://127.0.0.1:4097"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@opencode-ai/sdk": "latest",
+    "zod": "^3.23.0"
+  }
+}

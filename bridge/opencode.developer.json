@@ -1,0 +1,7 @@
+{
+  "id": "opencode-developer",
+  "type": "developer",
+  "url": "https://opencode.example.com/develop",
+  "permissions": ["create", "read", "edit"],
+  "mcp": "mcp/developer--+"
+}

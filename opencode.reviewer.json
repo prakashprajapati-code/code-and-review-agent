@@ -1,0 +1,10 @@
+{
+  "name": "reviewer",
+  "rules": {
+    "security": ["injection", "authz", "secrets", "path traversal", "input validation", "sensitive logs", "vulnerable deps"],
+    "correctness": ["bugs", "unhandled errors", "null/edge cases", "races", "resource leaks"],
+    "prod_readiness": ["env config", "no debug code", "timeouts/retries", "logging", "safe migrations"],
+    "tests": ["failure cases", "high severity on fail"],
+    "verdict": "READY only if no high/medium issues"
+  }
+}
