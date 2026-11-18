@@ -4,7 +4,9 @@ import { GateRunner } from './gate.js'
 import { SnapshotFreezer } from './snapshot.js'
 import { McpServer } from './mcp.js'
 import { SessionClient } from './session.js'
-import { StdioServerTransport } from '../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js'
+import { StreamableHTTPServerTransport } from '../node_modules/@modelcontextprotocol/sdk/dist/esm/server/streamableHttp.js'
+import { isInitializeRequest } from '../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js'
+import { createServer } from 'http'
 import 'dotenv/config'
 
 /**
@@ -14,10 +16,10 @@ import 'dotenv/config'
  *   (if NOT_READY) push findings to Developer -> wait resolve/skip -> loop
  *
  *   StateManager   -> persistent state (.review/findings.json, verdict.json, decisions.log)
- *   GitWatcher     -> git staged-diff polling + dedup
+ *   GitWatcher     -> tracked working-tree diff + content hash
  *   GateRunner     -> runs GATE_CMDS, captures output
  *   SnapshotFreezer-> freezes .review/cycle-NNN/{changes.patch, gate.txt, meta.json, files/}
- *   McpServer      -> exposes bridge_* tools over stdio for Reviewer/Developer
+ *   McpServer      -> exposes bridge_* tools over Streamable HTTP for Reviewer/Developer
  *   SessionClient  -> OpenCode session API for cross-terminal prompts
  */
 export class BridgeOrchestrator {
@@ -27,51 +29,78 @@ export class BridgeOrchestrator {
     this.idleMs = parseInt(process.env.IDLE_MS || '4000', 10)
     this.maxDiffBytes = 400 * 1024
     this.gateCmds = process.env.GATE_CMDS || 'npm test;;npm run lint;;npm audit'
-    this.devUrl = process.env.DEV_URL   
-    this.revUrl = process.env.REV_URL
+    this.devUrl = process.env.DEV_URL || 'http://127.0.0.1:4096'
+    this.revUrl = process.env.REV_URL || 'http://127.0.0.1:4097'
     this.stateManager = new StateManager(this.reviewDir)
-    this.gitWatcher = new GitWatcher(this.repoRoot, this.idleMs)
+    this.gitWatcher = new GitWatcher(this.repoRoot)
     this.gateRunner = new GateRunner(this.gateCmds)
     this.snapshotFreezer = new SnapshotFreezer(
       this.repoRoot, this.reviewDir, this.gateRunner, this.maxDiffBytes
     )
-    this.mcpServer = new McpServer(this.stateManager)
-    this.revSessionClient = new SessionClient({ baseUrl: this.revUrl ,authToken :process.env.REV_URL_PASSWORD })
-    this.devSessionClient = new SessionClient({ baseUrl: this.devUrl ,authToken : process.env.DEV_URL_PASSWORD})
+    this.revSessionClient = new SessionClient({
+      baseUrl: this.revUrl,
+      user: process.env.USER_NAME || 'opencode',
+      pass: process.env.REV_URL_PASSWORD || ''
+    })
+    this.devSessionClient = new SessionClient({
+      baseUrl: this.devUrl,
+      user: process.env.USER_NAME || 'opencode',
+      pass: process.env.DEV_URL_PASSWORD || ''
+    })
 
-    this.devSessionId = null
-    this.revSessionId = null
+    this.devSessionId = process.env.DEV_SESSION || null
+    this.revSessionId = process.env.REV_SESSION || null
     this.pollIntervalMs = 2000
     this.pollMaxMs = 120000
+    this.watchIntervalMs = Math.min(1000, this.idleMs)
+    this.lastReviewedHash = ''
+    this.observedHash = null
+    this.quietSince = null
   }
 
   async discoverSessions() {
     // Discover Reviewer session
-    try {
-      console.log(this.revSessionClient)
-      const revSessions = await this.revSessionClient.listSessions()
-      if (revSessions.length > 0) {
-        this.revSessionId = revSessions[0].id
-        if (revSessions.length > 1) {
-          console.log(`WARNING: multiple Reviewer sessions found, using ${this.revSessionId}`)
+    if (this.revSessionId) {
+      console.log(`Using Reviewer session from REV_SESSION: ${this.revSessionId}`)
+    } else {
+      try {
+        console.log(`Reviewer base URL: ${this.revSessionClient.baseUrl}`)
+        const revSessions = await this.revSessionClient.listSessions()
+        if (revSessions.length > 0) {
+          this.revSessionId = revSessions[0].id
+          if (revSessions.length > 1) {
+            console.log(`WARNING: multiple Reviewer sessions found, using ${this.revSessionId}`)
+          }
+        } else {
+          // No sessions exist; create one
+          const created = await this.revSessionClient.createSession()
+          if (created) this.revSessionId = created
         }
+      } catch (e) {
+        console.log(`Reviewer session discovery skipped: ${e.message}`)
       }
-    } catch (e) {
-      console.log(`Reviewer session discovery skipped: ${e.message}`)
     }
 
     // Discover Developer session
-    try {
-       console.log(this.devSessionClient)
-      const devSessions = await this.devSessionClient.listSessions()
-      if (devSessions.length > 0) {
-        this.devSessionId = devSessions[0].id
-        if (devSessions.length > 1) {
-          console.log(`WARNING: multiple Developer sessions found, using ${this.devSessionId}`)
+    if (this.devSessionId) {
+      console.log(`Using Developer session from DEV_SESSION: ${this.devSessionId}`)
+    } else {
+      try {
+        console.log(`Developer base URL: ${this.devSessionClient.baseUrl}`)
+        const devSessions = await this.devSessionClient.listSessions()
+        if (devSessions.length > 0) {
+          this.devSessionId = devSessions[0].id
+          if (devSessions.length > 1) {
+            console.log(`WARNING: multiple Developer sessions found, using ${this.devSessionId}`)
+          }
+        } else {
+          // No sessions exist; create one
+          const created = await this.devSessionClient.createSession()
+          if (created) this.devSessionId = created
         }
+      } catch (e) {
+        console.log(`Developer session discovery skipped: ${e.message}`)
       }
-    } catch (e) {
-      console.log(`Developer session discovery skipped: ${e.message}`)
     }
   }
 
@@ -108,25 +137,126 @@ export class BridgeOrchestrator {
   async start() {
     this.stateManager.ensureDir()
 
-    const transport = new StdioServerTransport()
-    await this.mcpServer.connect(transport)
+    const sessions = new Map()
+
+    const server = createServer(async (req, res) => {
+      try {
+        let body
+        if (req.method === 'POST') {
+          const chunks = []
+          for await (const chunk of req) chunks.push(chunk)
+          const raw = Buffer.concat(chunks).toString('utf8')
+          try {
+            body = raw ? JSON.parse(raw) : undefined
+          } catch {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: { code: -32700, message: 'Invalid JSON' },
+              id: null
+            }))
+            return
+          }
+        }
+
+        const sessionId = req.headers['mcp-session-id']
+        if (req.method === 'GET' && !sessionId) {
+          res.statusCode = 405
+          res.end()
+          return
+        }
+        let transport = sessionId ? sessions.get(sessionId) : undefined
+
+        if (req.method === 'POST' && !transport && !sessionId && isInitializeRequest(body)) {
+          const newTransport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => crypto.randomUUID(),
+            onsessioninitialized: (sid) => sessions.set(sid, newTransport)
+          })
+          newTransport.onclose = () => {
+            const sid = newTransport.sessionId
+            if (sid) sessions.delete(sid)
+          }
+          const mcpServer = new McpServer(this.stateManager)
+          await mcpServer.connect(newTransport)
+          transport = newTransport
+        }
+
+        if (!transport) {
+          res.statusCode = sessionId ? 404 : 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: sessionId ? 'Session not found' : 'Bad Request: No valid session ID provided'
+            },
+            id: null
+          }))
+          return
+        }
+
+        await transport.handleRequest(req, res, body)
+      } catch (error) {
+        console.error('Error handling MCP request:', error)
+        if (!res.headersSent) {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: 'Internal server error' },
+            id: null
+          }))
+        }
+      }
+    })
+    const port = parseInt(process.env.BRIDGE_PORT || '5000', 10)
+    server.listen(port, () => {
+      console.log(`MCP server listening on http://127.0.0.1:${port}`)
+    })
 
     await this.discoverSessions()
 
     while (true) {
-      await new Promise(r => setTimeout(r, this.idleMs))
+      await new Promise(r => setTimeout(r, this.watchIntervalMs))
 
-      if (!this.gitWatcher.hasNewDiff()) continue
-
-      let patch
-      try {
-        patch = this.gitWatcher.getStagedPatch()
-      } catch {
+      const change = this.gitWatcher.readPatch()
+      if (!change || !change.patch.trim()) {
+        this.observedHash = null
+        this.quietSince = null
         continue
       }
 
-      const cycleName = this.snapshotFreezer.freeze(patch)
-      if (!cycleName) continue
+      if (change.hash === this.lastReviewedHash) {
+        this.observedHash = change.hash
+        this.quietSince = null
+        continue
+      }
+
+      if (change.hash !== this.observedHash) {
+        this.observedHash = change.hash
+        this.quietSince = Date.now()
+        console.log(`patch changed: ${change.hash.slice(0, 8)}`)
+        continue
+      }
+
+      if (this.quietSince === null || Date.now() - this.quietSince < this.idleMs) continue
+
+      const cycleName = this.snapshotFreezer.freeze({
+        patch: change.patch,
+        names: change.names
+      })
+      if (!cycleName) {
+        console.log(`patch too large (> ${this.maxDiffBytes} bytes), skipping`)
+        this.lastReviewedHash = change.hash
+        this.observedHash = null
+        this.quietSince = null
+        continue
+      }
+
+      this.lastReviewedHash = change.hash
+      this.observedHash = null
+      this.quietSince = null
       console.log(`snapshot frozen: ${cycleName}`)
 
       // ---- Phase 4: Prompt Reviewer ----

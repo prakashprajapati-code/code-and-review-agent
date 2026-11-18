@@ -4,18 +4,26 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "setup": "npm install",
     "bridge": "node ./bridge/bridge.mjs",
-    "dev": "OPENCODE_CONFIG=./opencode.developer.json opencode --port 4096",
-    "review": "OPENCODE_CONFIG=./opencode.reviewer.json opencode --port 4097",
+    "dev": "OPENCODE_CONFIG=./opencode.developer.json opencode serve --port 4096 --hostname 127.0.0.1",
+    "review": "OPENCODE_CONFIG=./opencode.reviewer.json opencode serve --port 4097 --hostname 127.0.0.1",
     "dev:server": "OPENCODE_CONFIG=./opencode.developer.json opencode serve --port 4096 --hostname 127.0.0.1",
-    "dev:tui": "opencode attach http://127.0.0.1:4096",
+    "dev:tui": "set -a; . ./.env; set +a; OPENCODE_PASSWORD=$DEV_URL_PASSWORD opencode --server http://127.0.0.1:4096",
     "review:server": "OPENCODE_CONFIG=./opencode.reviewer.json opencode serve --port 4097 --hostname 127.0.0.1",
-    "review:tui": "opencode attach http://127.0.0.1:4097"
+    "review:tui": "set -a; . ./.env; set +a; OPENCODE_PASSWORD=$REV_URL_PASSWORD opencode --server http://127.0.0.1:4097",
+    "start:all": "concurrently -n bridge,dev,review -c green,blue,magenta \"npm run bridge\" \"npm run dev\" \"npm run review\"",
+    "start:all:detached": "npm run bridge & npm run dev & npm run review",
+    "attach:dev": "set -a; . ./.env; set +a; OPENCODE_PASSWORD=$DEV_URL_PASSWORD opencode --server http://127.0.0.1:4096",
+    "attach:review": "set -a; . ./.env; set +a; OPENCODE_PASSWORD=$REV_URL_PASSWORD opencode --server http://127.0.0.1:4097"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@opencode-ai/sdk": "latest",
     "dotenv": "^18.0.10",
     "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
   }
 }

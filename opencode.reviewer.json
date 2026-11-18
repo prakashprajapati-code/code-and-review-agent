@@ -1,10 +1,27 @@
 {
-  "name": "reviewer",
-  "rules": {
-    "security": ["injection", "authz", "secrets", "path traversal", "input validation", "sensitive logs", "vulnerable deps"],
-    "correctness": ["bugs", "unhandled errors", "null/edge cases", "races", "resource leaks"],
-    "prod_readiness": ["env config", "no debug code", "timeouts/retries", "logging", "safe migrations"],
-    "tests": ["failure cases", "high severity on fail"],
-    "verdict": "READY only if no high/medium issues"
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "edit", "resource": "*", "effect": "deny" },
+    { "action": "shell", "resource": "*", "effect": "deny" },
+    { "action": "subagent", "resource": "*", "effect": "deny" },
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "read", "resource": "*.env", "effect": "ask" },
+    { "action": "read", "resource": "*.env.*", "effect": "ask" },
+    { "action": "read", "resource": "*.env.example", "effect": "allow" },
+    { "action": "glob", "resource": "*", "effect": "allow" },
+    { "action": "grep", "resource": "*", "effect": "allow" },
+    { "action": "question", "resource": "*", "effect": "allow" }
+  ],
+  "mcp": {
+    "servers": {
+      "bridge": {
+        "type": "local",
+        "command": ["node", "./bridge/mcp-proxy.mjs"],
+        "cwd": "/home/naarvee/projects/test_project/code-Review-agent",
+        "env": {
+          "BRIDGE_URL": "http://127.0.0.1:5000/mcp"
+        }
+      }
+    }
   }
 }

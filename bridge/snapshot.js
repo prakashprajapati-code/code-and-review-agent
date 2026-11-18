@@ -1,11 +1,10 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs'
-import { execSync } from 'child_process'
 import { join } from 'path'
 
 /**
  * SnapshotFreezer owns freezing a review cycle snapshot to disk:
  *   .review/cycle-NNN/
- *     changes.patch   -> read-only staged diff
+ *     changes.patch   -> read-only working-tree diff
  *     gate.txt        -> combined test/lint/audit output
  *     meta.json       -> cycle metadata (timestamp, patch size, gate cmds)
  *     files/          -> full copies of each changed file
@@ -33,7 +32,7 @@ export class SnapshotFreezer {
       .sort()
   }
 
-  freeze(patch) {
+  freeze({ patch, names }) {
     if (Buffer.byteLength(patch, 'utf8') > this.maxDiffBytes) {
       return null // diff too large to review
     }
@@ -44,8 +43,7 @@ export class SnapshotFreezer {
     mkdirSync(cycleDir, { recursive: true })
     mkdirSync(filesDir, { recursive: true })
 
-    const changed = this._getStagedDiffNames()
-    for (const f of changed) {
+    for (const f of names) {
       try {
         const full = join(this.repoRoot, f)
         if (existsSync(full)) {
@@ -69,15 +67,5 @@ export class SnapshotFreezer {
     )
 
     return cycleName
-  }
-
-  _getStagedDiffNames() {
-    return execSync(
-      `git -C "${this.repoRoot}" diff --staged --name-only HEAD`,
-      { encoding: 'utf8' }
-    )
-      .trim()
-      .split('\n')
-      .filter(Boolean)
   }
 }

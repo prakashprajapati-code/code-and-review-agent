@@ -2,28 +2,41 @@
  * SessionClient owns OpenCode session API interactions:
  *   - list sessions on an instance (GET /api/session)
  *   - get session status (GET /api/session/{id}/status)
- *   - send prompt_async to a session (POST /api/session/{id}/prompt_async)
+ *   - send a prompt to a session (POST /api/session/{id}/prompt)
  *
  * All configuration comes from constructor options or env vars — nothing
  * is hardcoded beyond sensible defaults that you can override.
  */
 
-import { config } from "zod/v4"
-
 export class SessionClient {
-  constructor({ baseUrl, authToken } = {}) {
-    this.baseUrl = baseUrl || process.env.REV_URL
-    this.authToken = authToken || process.env.OPENCODE_AUTH_TOKEN || undefined
+  constructor({ baseUrl, user, pass } = {}) {
+    this.baseUrl = baseUrl || process.env.REV_URL || 'http://127.0.0.1:4097'
+    this.user = user ||'opencode'
+    this.pass = pass || ''
   }
 
   _headers(extra = {}) {
     const h = { 'Content-Type': 'application/json', ...extra }
-    if (this.authToken) h.Authorization ="Basic " + btoa(`opencode:${this.authToken}`)
+    if (this.pass) {
+      const token = Buffer.from(`${this.user}:${this.pass}`).toString('base64')
+      h.Authorization = `Basic ${token}`
+    }
     return h
   }
 
+  async createSession() {
+    const res = await fetch(`${this.baseUrl}/api/session`, {
+      method: 'POST',
+      headers: this._headers(),
+      body: JSON.stringify({})
+    })
+    if (!res.ok) throw new Error(`createSession failed: ${res.status} ${await res.text()}`)
+    const json = await res.json()
+    return json.data?.id || json.id || null
+  }
+
   async listSessions() {
-    const res = await fetch(`${this.baseUrl}/api/session`, {headers: this._headers()})
+    const res = await fetch(`${this.baseUrl}/api/session`, { headers: this._headers() })
     if (!res.ok) throw new Error(`listSessions failed: ${res.status} ${await res.text()}`)
     const json = await res.json()
     return Array.isArray(json) ? json : (json.data ?? [])
@@ -38,13 +51,13 @@ export class SessionClient {
   }
 
   async sendPromptAsync(sessionId, text) {
-    const body = JSON.stringify({ parts: [{ type: 'text', text }] })
-    const res = await fetch(`${this.baseUrl}/api/session/${sessionId}/prompt_async`, {
+    const body = JSON.stringify({ text })
+    const res = await fetch(`${this.baseUrl}/api/session/${sessionId}/prompt`, {
       method: 'POST',
       headers: this._headers(),
       body
     })
     if (!res.ok) throw new Error(`sendPromptAsync failed: ${res.status} ${await res.text()}`)
-    return res.status === 204
+    return true
   }
 }

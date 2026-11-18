@@ -1,65 +1,42 @@
 import { execSync } from 'child_process'
+import { createHash } from 'crypto'
 
 /**
  * GitWatcher owns all git interactions:
- *   - reading staged file names (diff --staged --name-only HEAD)
- *   - reading the full staged patch (diff --staged)
- *   - change detection + dedup via hash of the staged diff
+ *   - reading tracked working-tree changes (staged + unstaged)
+ *   - reading the full patch (git diff HEAD)
+ *   - content hashing for dedup
  */
 export class GitWatcher {
-  constructor(repoRoot, idleMs = 4000) {
+  constructor(repoRoot) {
     this.repoRoot = repoRoot
-    this.idleMs = idleMs
-    this.lastDiffHash = ''
   }
 
-  getStagedDiff() {
-    return execSync(
-      `git -C "${this.repoRoot}" diff --staged --name-only HEAD`,
-      { encoding: 'utf8' }
-    ).trim()
-  }
-
-  getStagedPatch() {
-    return execSync(`git -C "${this.repoRoot}" diff --staged`, {
-      encoding: 'utf8'
-    })
-  }
-
-  computeHash(diffOutput) {
-    return Buffer.from(diffOutput).toString('base64').slice(0, 16)
-  }
-
-  /**
-   * Returns true when a new staged diff is present since the last processed one.
-   * Updates the internal last-seen hash so identical re-staged diffs are skipped.
-   */
-  hasNewDiff() {
-    let diffOutput
+  readPatch() {
     try {
-      diffOutput = this.getStagedDiff()
-    } catch {
-      return false
-    }
-    if (!diffOutput) return false
+      const patch = execSync(
+        `git -C "${this.repoRoot}" diff HEAD`,
+        { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 }
+      )
+      if (!patch.trim()) {
+        return { patch: '', names: [], hash: '' }
+      }
 
-    const hash = this.computeHash(diffOutput)
-    if (hash === this.lastDiffHash) return false
+      const names = execSync(
+        `git -C "${this.repoRoot}" diff --name-only HEAD`,
+        { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 }
+      )
+        .trim()
+        .split('\n')
+        .filter(Boolean)
 
-    this.lastDiffHash = hash
-    return true
-  }
-
-  /**
-   * Waits one idle tick (idleMs) then returns the current staged diff output,
-   * or null if nothing is staged.
-   */
-  async pollIdle() {
-    await new Promise(r => setTimeout(r, this.idleMs))
-    try {
-      return this.getStagedDiff()
+      return { patch, names, hash: this.computeHash(patch) }
     } catch {
       return null
     }
+  }
+
+  computeHash(patch) {
+    return createHash('sha256').update(patch).digest('hex')
   }
 }

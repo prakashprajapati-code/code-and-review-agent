@@ -1,7 +1,27 @@
 {
-  "id": "opencode-developer",
-  "type": "developer",
-  "url": "https://opencode.example.com/develop",
-  "permissions": ["create", "read", "edit"],
-  "mcp": "mcp/developer--+"
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "edit", "resource": "*", "effect": "allow" },
+    { "action": "shell", "resource": "*", "effect": "allow" },
+    { "action": "subagent", "resource": "*", "effect": "allow" },
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "read", "resource": "*.env", "effect": "ask" },
+    { "action": "read", "resource": "*.env.*", "effect": "ask" },
+    { "action": "read", "resource": "*.env.example", "effect": "allow" },
+    { "action": "glob", "resource": "*", "effect": "allow" },
+    { "action": "grep", "resource": "*", "effect": "allow" },
+    { "action": "question", "resource": "*", "effect": "allow" }
+  ],
+  "mcp": {
+    "servers": {
+      "bridge": {
+        "type": "local",
+        "command": ["node", "./bridge/mcp-proxy.mjs"],
+        "cwd": "/home/naarvee/projects/test_project/code-Review-agent",
+        "env": {
+          "BRIDGE_URL": "http://127.0.0.1:5000/mcp"
+        }
+      }
+    }
+  }
 }
