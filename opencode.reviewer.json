@@ -19,7 +19,7 @@
         "command": ["node", "./bridge/mcp-proxy.mjs"],
         "cwd": "/home/naarvee/projects/test_project/code-Review-agent",
         "env": {
-          "BRIDGE_URL": "http://127.0.0.1:5000/mcp"
+          "BRIDGE_URL": "http://127.0.0.1:5000/mcp/reviewer"
         }
       }
     }

@@ -4,6 +4,8 @@ import { GateRunner } from './gate.js'
 import { SnapshotFreezer } from './snapshot.js'
 import { McpServer } from './mcp.js'
 import { SessionClient } from './session.js'
+import { validateVerdict, shouldStop } from './policy.js'
+import { buildReviewerPrompt, buildDeveloperPrompt } from './prompts.js'
 import { StreamableHTTPServerTransport } from '../node_modules/@modelcontextprotocol/sdk/dist/esm/server/streamableHttp.js'
 import { isInitializeRequest } from '../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js'
 import { createServer } from 'http'
@@ -27,13 +29,17 @@ export class BridgeOrchestrator {
     this.repoRoot = process.env.BRIDGE_ROOT || process.cwd()
     this.reviewDir = `${this.repoRoot}/.review`
     this.idleMs = parseInt(process.env.IDLE_MS || '4000', 10)
+    const maxCycles = parseInt(process.env.MAX_CYCLES || '8', 10)
+    // MAX_CYCLES is a per-process budget, not total cycles on disk.
+    this.maxCycles = Number.isFinite(maxCycles) ? maxCycles : 8
+    this.cyclesRun = 0
     this.maxDiffBytes = 400 * 1024
-    this.gateCmds = process.env.GATE_CMDS || 'npm test;;npm run lint;;npm audit'
+    this.gateCmds = process.env.GATE_CMDS || 'npm test;;npm run lint;;npm audit --audit-level=high'
     this.devUrl = process.env.DEV_URL || 'http://127.0.0.1:4096'
     this.revUrl = process.env.REV_URL || 'http://127.0.0.1:4097'
     this.stateManager = new StateManager(this.reviewDir)
     this.gitWatcher = new GitWatcher(this.repoRoot)
-    this.gateRunner = new GateRunner(this.gateCmds)
+    this.gateRunner = new GateRunner(this.gateCmds, this.repoRoot)
     this.snapshotFreezer = new SnapshotFreezer(
       this.repoRoot, this.reviewDir, this.gateRunner, this.maxDiffBytes
     )
@@ -126,7 +132,7 @@ export class BridgeOrchestrator {
       const findings = state.findings
       const allDecided = cycleFindingIds.every(id => {
         const f = findings.find(x => x.id === id)
-        return f && (f.status === 'resolved' || f.status === 'skipped')
+        return f && (f.status === 'in_progress' || f.status === 'resolved' || f.status === 'skipped')
       })
       if (allDecided) return true
       elapsed += this.pollIntervalMs
@@ -141,6 +147,18 @@ export class BridgeOrchestrator {
 
     const server = createServer(async (req, res) => {
       try {
+        const path = req.url.split('?')[0]
+        const role = path === '/mcp/reviewer'
+          ? 'reviewer'
+          : path === '/mcp/developer'
+            ? 'developer'
+            : null
+        if (!role) {
+          res.statusCode = 404
+          res.end()
+          return
+        }
+
         let body
         if (req.method === 'POST') {
           const chunks = []
@@ -166,18 +184,32 @@ export class BridgeOrchestrator {
           res.end()
           return
         }
-        let transport = sessionId ? sessions.get(sessionId) : undefined
+        const session = sessionId ? sessions.get(sessionId) : undefined
+        if (session && session.role !== role) {
+          res.statusCode = 403
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: `Session is bound to ${session.role}, not ${role}`
+            },
+            id: null
+          }))
+          return
+        }
+        let transport = session ? session.transport : undefined
 
         if (req.method === 'POST' && !transport && !sessionId && isInitializeRequest(body)) {
           const newTransport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
-            onsessioninitialized: (sid) => sessions.set(sid, newTransport)
+            onsessioninitialized: (sid) => sessions.set(sid, { transport: newTransport, role })
           })
           newTransport.onclose = () => {
             const sid = newTransport.sessionId
             if (sid) sessions.delete(sid)
           }
-          const mcpServer = new McpServer(this.stateManager)
+          const mcpServer = new McpServer(this.stateManager, role)
           await mcpServer.connect(newTransport)
           transport = newTransport
         }
@@ -212,12 +244,16 @@ export class BridgeOrchestrator {
     })
     const port = parseInt(process.env.BRIDGE_PORT || '5000', 10)
     server.listen(port, () => {
-      console.log(`MCP server listening on http://127.0.0.1:${port}`)
+      console.log(`MCP server listening on http://127.0.0.1:${port}/mcp/reviewer and /mcp/developer`)
     })
 
     await this.discoverSessions()
 
     while (true) {
+      if (this.cyclesRun >= this.maxCycles) {
+        console.log(`max cycles reached (${this.maxCycles})`)
+        break
+      }
       await new Promise(r => setTimeout(r, this.watchIntervalMs))
 
       const change = this.gitWatcher.readPatch()
@@ -242,11 +278,11 @@ export class BridgeOrchestrator {
 
       if (this.quietSince === null || Date.now() - this.quietSince < this.idleMs) continue
 
-      const cycleName = this.snapshotFreezer.freeze({
+      const frozen = this.snapshotFreezer.freeze({
         patch: change.patch,
         names: change.names
       })
-      if (!cycleName) {
+      if (!frozen) {
         console.log(`patch too large (> ${this.maxDiffBytes} bytes), skipping`)
         this.lastReviewedHash = change.hash
         this.observedHash = null
@@ -254,14 +290,19 @@ export class BridgeOrchestrator {
         continue
       }
 
+      const { cycleName, gateOk, gateResults } = frozen
+      this.cyclesRun += 1
       this.lastReviewedHash = change.hash
       this.observedHash = null
       this.quietSince = null
       console.log(`snapshot frozen: ${cycleName}`)
+      console.log(`gate ${gateOk ? 'passed' : 'failed'}: ${cycleName}`)
 
       // ---- Phase 4: Prompt Reviewer ----
       if (this.revSessionId) {
-        const prompt = `Review snapshot cycle ${cycleName}. Gate output and changed files are in .review/${cycleName}/. Submit each issue with bridge_submit_finding, then give a verdict with bridge_submit_verdict (READY or NOT_READY).`
+        const previousFindings = this.stateManager.getState().findings
+          .filter(f => f.cycle !== cycleName)
+        const prompt = buildReviewerPrompt({ cycleName, gateOk, previousFindings })
         try {
           await this.revSessionClient.sendPromptAsync(this.revSessionId, prompt)
           console.log(`prompted reviewer: ${cycleName}`)
@@ -276,36 +317,64 @@ export class BridgeOrchestrator {
         continue
       }
 
+      const state = this.stateManager.getState()
+      const validation = validateVerdict({
+        verdict: verdict.verdict,
+        findings: state.findings,
+        gateOk,
+        cycle: cycleName
+      })
+
       if (verdict.verdict === 'READY') {
-        console.log(`cycle ${cycleName} READY`)
-        continue
+        if (validation.valid) {
+          console.log(`validated READY: ${cycleName}`)
+          break
+        }
+        console.log(`READY rejected for ${cycleName}: ${validation.reason}`)
       }
 
       // ---- Phase 5: Push findings to Developer ----
-      const state = this.stateManager.getState()
       const cycleFindings = state.findings.filter(
         f => f.cycle === cycleName && f.status === 'open'
       )
+      const failing = gateOk ? [] : gateResults.filter(r => !r.ok).map(r => r.cmd)
+      const gateFailure = gateOk
+        ? null
+        : `Failing commands:\n${failing.map(c => `- ${c}`).join('\n')}\nSee .review/${cycleName}/gate.txt for output.`
 
-      if (this.devSessionId && cycleFindings.length > 0) {
-        const findingList = cycleFindings
-          .map(f => `- #${f.id} [${f.severity}] ${f.category}: ${f.description}`)
-          .join('\n')
-        const prompt = `Review findings for cycle ${cycleName}:\n${findingList}\n\nFor each finding, reply: resolve <id> or skip <id> because <reason>. I will record your decisions.`
+      if (this.devSessionId && (cycleFindings.length > 0 || gateFailure)) {
+        const prompt = buildDeveloperPrompt({ cycleName, findings: cycleFindings, gateFailure })
         try {
           await this.devSessionClient.sendPromptAsync(this.devSessionId, prompt)
-          console.log(`pushed findings to developer: ${cycleName}`)
+          console.log(`pushed developer prompt: ${cycleName}`)
         } catch (e) {
           console.log(`developer prompt failed: ${e.message}`)
         }
       }
 
       const findingIds = cycleFindings.map(f => f.id)
-      const decided = await this.waitForDecisions(findingIds)
-      if (decided) {
-        console.log(`all findings decided for ${cycleName}`)
-      } else {
-        console.log(`not all findings decided for ${cycleName} within poll window`)
+      const decided = findingIds.length === 0
+        ? true
+        : await this.waitForDecisions(findingIds)
+      if (findingIds.length > 0) {
+        if (decided) {
+          console.log(`all findings decided for ${cycleName}`)
+        } else {
+          console.log(`not all findings decided for ${cycleName} within poll window`)
+        }
+      }
+
+      const stop = shouldStop({
+        verdict: verdict.verdict,
+        gateOk,
+        findings: state.findings,
+        cycle: cycleName,
+        cyclesRun: this.cyclesRun,
+        maxCycles: this.maxCycles
+      })
+      if (stop.stop) {
+        console.log(stop.reason)
+        break
       }
     }
   }

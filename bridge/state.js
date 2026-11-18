@@ -41,6 +41,9 @@ export class StateManager {
 
   addFinding(finding) {
     const findings = this.getFindings()
+    if (findings.some(f => f.id === finding.id && f.cycle === finding.cycle)) {
+      throw new Error(`finding ${finding.id} already exists in ${finding.cycle}`)
+    }
     findings.push({ ...finding, status: 'open', decided_at: null })
     this.writeJson(this.findingsFile, findings)
     return findings
@@ -75,6 +78,9 @@ export class StateManager {
   }
 
   recordDecision(id, decision, reason) {
+    if (decision === 'skip' && (!reason || !reason.trim())) {
+      throw new Error('skip requires a reason')
+    }
     this.ensureDir()
     const line = decision === 'skip' ? `skip ${id} because ${reason}` : `resolve ${id}`
     writeFileSync(this.decisionsLog, line + '\n', { flag: 'a' })
@@ -83,7 +89,7 @@ export class StateManager {
     const findings = this.getFindings()
     const f = findings.find(x => x.id === id)
     if (f) {
-      f.status = decision === 'skip' ? 'skipped' : 'resolved'
+      f.status = decision === 'skip' ? 'skipped' : 'in_progress'
       f.decided_at = new Date().toISOString()
       f.decision_reason = reason || null
     }

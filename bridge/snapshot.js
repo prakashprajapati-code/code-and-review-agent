@@ -6,7 +6,7 @@ import { join } from 'path'
  *   .review/cycle-NNN/
  *     changes.patch   -> read-only working-tree diff
  *     gate.txt        -> combined test/lint/audit output
- *     meta.json       -> cycle metadata (timestamp, patch size, gate cmds)
+ *     meta.json       -> cycle metadata (timestamp, patch size, gate cmds, gate status)
  *     files/          -> full copies of each changed file
  */
 export class SnapshotFreezer {
@@ -54,18 +54,22 @@ export class SnapshotFreezer {
       }
     }
 
+    const gate = this.gateRunner.run()
+
     writeFileSync(join(cycleDir, 'changes.patch'), patch)
-    writeFileSync(join(cycleDir, 'gate.txt'), this.gateRunner.run())
+    writeFileSync(join(cycleDir, 'gate.txt'), gate.output)
     writeFileSync(
       join(cycleDir, 'meta.json'),
       JSON.stringify({
         cycle: cycleName,
         timestamp: new Date().toISOString(),
         patch_size_bytes: Buffer.byteLength(patch, 'utf8'),
-        gate_cmds: this.gateRunner.cmds.join(';;')
+        gate_cmds: this.gateRunner.cmds.join(';;'),
+        gate_ok: gate.ok,
+        gate_results: gate.results
       }, null, 2)
     )
 
-    return cycleName
+    return { cycleName, gateOk: gate.ok, gateResults: gate.results }
   }
 }

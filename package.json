@@ -5,6 +5,9 @@
   "private": true,
   "scripts": {
     "setup": "npm install",
+    "test": "node --test",
+    "lint": "eslint .",
+    "gate": "npm test && npm run lint && npm audit --audit-level=high",
     "bridge": "node ./bridge/bridge.mjs",
     "dev": "OPENCODE_CONFIG=./opencode.developer.json opencode serve --port 4096 --hostname 127.0.0.1",
     "review": "OPENCODE_CONFIG=./opencode.reviewer.json opencode serve --port 4097 --hostname 127.0.0.1",
@@ -21,9 +24,12 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@opencode-ai/sdk": "latest",
     "dotenv": "^18.0.10",
-    "zod": "^3.23.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "@eslint/js": "^10.0.1",
+    "concurrently": "^8.2.2",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0"
   }
 }

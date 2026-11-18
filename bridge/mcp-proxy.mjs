@@ -10,7 +10,11 @@ import { StdioServerTransport } from '/home/naarvee/projects/test_project/code-R
 import { Server } from '/home/naarvee/projects/test_project/code-Review-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '/home/naarvee/projects/test_project/code-Review-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js'
 
-const BRIDGE_URL = process.env.BRIDGE_URL || 'http://127.0.0.1:5000/mcp'
+const BRIDGE_URL = process.env.BRIDGE_URL
+if (!BRIDGE_URL) {
+  console.error('BRIDGE_URL is required (use /mcp/reviewer or /mcp/developer)')
+  process.exit(1)
+}
 
 async function main() {
   // Connect to remote bridge
