@@ -74,6 +74,23 @@ export class StateManager {
     writeFileSync(this.decisionsLog, line + '\n', { flag: 'a' })
   }
 
+  recordDecision(id, decision, reason) {
+    this.ensureDir()
+    const line = decision === 'skip' ? `skip ${id} because ${reason}` : `resolve ${id}`
+    writeFileSync(this.decisionsLog, line + '\n', { flag: 'a' })
+
+    // Also update finding status
+    const findings = this.getFindings()
+    const f = findings.find(x => x.id === id)
+    if (f) {
+      f.status = decision === 'skip' ? 'skipped' : 'resolved'
+      f.decided_at = new Date().toISOString()
+      f.decision_reason = reason || null
+    }
+    this.writeJson(this.findingsFile, findings)
+    return { id, decision, reason: reason || null }
+  }
+
   // ---- cycles ----
   getCycles() {
     this.ensureDir()

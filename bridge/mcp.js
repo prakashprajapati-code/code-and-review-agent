@@ -62,6 +62,19 @@ export class McpServer {
           }
         },
         {
+          name: 'bridge_record_decision',
+          description: 'Record a resolve or skip decision with the user exact words',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              decision: { type: 'string', enum: ['resolve', 'skip'] },
+              reason: { type: 'string' }
+            },
+            required: ['id', 'decision']
+          }
+        },
+        {
           name: 'bridge_get_state',
           description: 'Get current bridge state',
           inputSchema: { type: 'object', properties: {} }
@@ -100,6 +113,16 @@ export class McpServer {
         const parsed = z.object({ id: z.string() }).parse(args)
         this.stateManager.resolveFinding(parsed.id)
         this.stateManager.appendDecision(`resolve ${parsed.id}`)
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+      }
+
+      if (name === 'bridge_record_decision') {
+        const parsed = z.object({
+          id: z.string(),
+          decision: z.enum(['resolve', 'skip']),
+          reason: z.string().optional()
+        }).parse(args)
+        this.stateManager.recordDecision(parsed.id, parsed.decision, parsed.reason || null)
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
       }
 

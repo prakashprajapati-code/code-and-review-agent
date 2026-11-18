@@ -15,6 +15,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@opencode-ai/sdk": "latest",
+    "dotenv": "^18.0.10",
     "zod": "^3.23.0"
   }
 }
