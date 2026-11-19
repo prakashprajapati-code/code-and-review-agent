@@ -27,7 +27,7 @@ import 'dotenv/config'
 export class BridgeOrchestrator {
   constructor() {
     this.repoRoot = process.env.BRIDGE_ROOT || process.cwd()
-    this.reviewDir = `${this.repoRoot}/.review`
+    this.reviewDir = process.env.REVIEW_DIR || `${this.repoRoot}/.review`
     this.idleMs = parseInt(process.env.IDLE_MS || '4000', 10)
     const maxCycles = parseInt(process.env.MAX_CYCLES || '8', 10)
     // MAX_CYCLES is a per-process budget, not total cycles on disk.
@@ -56,6 +56,9 @@ export class BridgeOrchestrator {
 
     this.devSessionId = process.env.DEV_SESSION || null
     this.revSessionId = process.env.REV_SESSION || null
+    this.discoveryTimeoutMs = parseInt(process.env.DISCOVERY_TIMEOUT_MS || '60000', 10)
+    this.discoveryRetryMs = parseInt(process.env.DISCOVERY_RETRY_MS || '2000', 10)
+    this.lastDiscoveryAttempt = 0
     this.pollIntervalMs = 2000
     this.pollMaxMs = 120000
     this.watchIntervalMs = Math.min(1000, this.idleMs)
@@ -64,49 +67,46 @@ export class BridgeOrchestrator {
     this.quietSince = null
   }
 
-  async discoverSessions() {
-    // Discover Reviewer session
-    if (this.revSessionId) {
-      console.log(`Using Reviewer session from REV_SESSION: ${this.revSessionId}`)
-    } else {
-      try {
-        console.log(`Reviewer base URL: ${this.revSessionClient.baseUrl}`)
-        const revSessions = await this.revSessionClient.listSessions()
-        if (revSessions.length > 0) {
-          this.revSessionId = revSessions[0].id
-          if (revSessions.length > 1) {
-            console.log(`WARNING: multiple Reviewer sessions found, using ${this.revSessionId}`)
-          }
-        } else {
-          // No sessions exist; create one
-          const created = await this.revSessionClient.createSession()
-          if (created) this.revSessionId = created
-        }
-      } catch (e) {
-        console.log(`Reviewer session discovery skipped: ${e.message}`)
-      }
+  async _discoverRole(kind) {
+    const isRev = kind === 'reviewer'
+    const client = isRev ? this.revSessionClient : this.devSessionClient
+    const envId = isRev ? this.revSessionId : this.devSessionId
+    const label = isRev ? 'Reviewer' : 'Developer'
+    if (envId) {
+      console.log(`Using ${label} session from env: ${envId}`)
+      return
     }
-
-    // Discover Developer session
-    if (this.devSessionId) {
-      console.log(`Using Developer session from DEV_SESSION: ${this.devSessionId}`)
-    } else {
-      try {
-        console.log(`Developer base URL: ${this.devSessionClient.baseUrl}`)
-        const devSessions = await this.devSessionClient.listSessions()
-        if (devSessions.length > 0) {
-          this.devSessionId = devSessions[0].id
-          if (devSessions.length > 1) {
-            console.log(`WARNING: multiple Developer sessions found, using ${this.devSessionId}`)
-          }
-        } else {
-          // No sessions exist; create one
-          const created = await this.devSessionClient.createSession()
-          if (created) this.devSessionId = created
-        }
-      } catch (e) {
-        console.log(`Developer session discovery skipped: ${e.message}`)
+    try {
+      console.log(`${label} base URL: ${client.baseUrl}`)
+      // dev and review servers share a project session store, so both roles
+      // would pick the same first-listed session; create fresh ones instead.
+      // Pin existing sessions with DEV_SESSION / REV_SESSION.
+      let id = await client.createSession()
+      if (!id) {
+        const sessions = await client.listSessions()
+        id = sessions.length > 0 ? sessions[0].id : null
       }
+      if (id) {
+        if (isRev) this.revSessionId = id
+        else this.devSessionId = id
+        console.log(`${label} session ready: ${id}`)
+      }
+    } catch (e) {
+      console.log(`${label} session discovery failed: ${e.message}`)
+    }
+  }
+
+  async discoverSessions() {
+    const deadline = Date.now() + this.discoveryTimeoutMs
+    while (true) {
+      if (!this.revSessionId) await this._discoverRole('reviewer')
+      if (!this.devSessionId) await this._discoverRole('developer')
+      if (this.revSessionId && this.devSessionId) return
+      if (Date.now() >= deadline) {
+        console.log('session discovery timed out; will retry in the main loop')
+        return
+      }
+      await new Promise(r => setTimeout(r, this.discoveryRetryMs))
     }
   }
 
@@ -256,6 +256,15 @@ export class BridgeOrchestrator {
       }
       await new Promise(r => setTimeout(r, this.watchIntervalMs))
 
+      if (!this.revSessionId || !this.devSessionId) {
+        const now = Date.now()
+        if (now - this.lastDiscoveryAttempt > 10000) {
+          this.lastDiscoveryAttempt = now
+          if (!this.revSessionId) await this._discoverRole('reviewer')
+          if (!this.devSessionId) await this._discoverRole('developer')
+        }
+      }
+
       const change = this.gitWatcher.readPatch()
       if (!change || !change.patch.trim()) {
         this.observedHash = null
@@ -302,7 +311,7 @@ export class BridgeOrchestrator {
       if (this.revSessionId) {
         const previousFindings = this.stateManager.getState().findings
           .filter(f => f.cycle !== cycleName)
-        const prompt = buildReviewerPrompt({ cycleName, gateOk, previousFindings })
+        const prompt = buildReviewerPrompt({ cycleName, gateOk, previousFindings, snapshotDir: `${this.reviewDir}/${cycleName}` })
         try {
           await this.revSessionClient.sendPromptAsync(this.revSessionId, prompt)
           console.log(`prompted reviewer: ${cycleName}`)
@@ -340,10 +349,10 @@ export class BridgeOrchestrator {
       const failing = gateOk ? [] : gateResults.filter(r => !r.ok).map(r => r.cmd)
       const gateFailure = gateOk
         ? null
-        : `Failing commands:\n${failing.map(c => `- ${c}`).join('\n')}\nSee .review/${cycleName}/gate.txt for output.`
+        : `Failing commands:\n${failing.map(c => `- ${c}`).join('\n')}\nSee ${this.reviewDir}/${cycleName}/gate.txt for output.`
 
       if (this.devSessionId && (cycleFindings.length > 0 || gateFailure)) {
-        const prompt = buildDeveloperPrompt({ cycleName, findings: cycleFindings, gateFailure })
+        const prompt = buildDeveloperPrompt({ cycleName, findings: cycleFindings, gateFailure, snapshotDir: `${this.reviewDir}/${cycleName}` })
         try {
           await this.devSessionClient.sendPromptAsync(this.devSessionId, prompt)
           console.log(`pushed developer prompt: ${cycleName}`)

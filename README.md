@@ -35,16 +35,27 @@ The MCP surface is role-separated:
 
 Cross-role tool calls are rejected. The old ambiguous `/mcp` endpoint returns `404`.
 
-## Setup
+## Quick start (local team use)
+
+Prerequisites: Node 24+, git, and `opencode` on PATH. The project must be a Git repository with at least one commit.
 
 ```bash
-# this repository is the bridge
 npm install
+npm start        # preflight checks, then starts bridge + developer + reviewer
 ```
 
-To use the bridge from another project, copy `bridge/`, `package.json`, `opencode.developer.json`, and `opencode.reviewer.json` into that project and run `npm install` there. The project must be a Git repository with at least one commit.
+If `.env` does not exist, `scripts/preflight.mjs` creates it with random per-role passwords. Otherwise make sure `.env` defines `DEV_URL_PASSWORD` and `REV_URL_PASSWORD` (see `.env.example`). Then open two terminals and attach chat:
+
+```bash
+npm run attach:dev    # you talk to the Developer here
+npm run attach:review # read-only Reviewer
+```
+
+To use the bridge from another project, copy `bridge/`, `config/`, `package.json`, `.env.example`, `scripts/` into that project and run `npm install` there.
 
 ## Run
+
+`npm start` runs `scripts/preflight.mjs` (opencode on PATH, git repo with a commit, `.env` present with passwords, ports 4096/4097/5000 free) and then starts all three processes. The role scripts (`bridge/run-role.mjs`) load only the matching role password, and inject the role config from `config/<role>.json` via `OPENCODE_CONFIG_CONTENT` (opencode v2 auto-loads neither `OPENCODE_CONFIG` nor arbitrarily named files).
 
 | Console | Commands |
 |---|---|
@@ -52,14 +63,7 @@ To use the bridge from another project, copy `bridge/`, `package.json`, `opencod
 | B: Developer | `npm run dev` (or `dev:server` + `dev:tui`) |
 | C: Reviewer | `npm run review` (or `review:server` + `review:tui`) |
 
-Check that OpenCode loaded the bridge tools:
-
-```bash
-OPENCODE_CONFIG=./opencode.developer.json opencode mcp list
-OPENCODE_CONFIG=./opencode.reviewer.json opencode mcp list
-```
-
-The Reviewer must see only the reviewer tools, and the Developer only the developer tools. Reload/restart the OpenCode servers after changing the MCP endpoints or permissions.
+The Reviewer must see only the reviewer tools, and the Developer only the developer tools. Restart the OpenCode servers after changing the MCP endpoints or permissions.
 
 ## Settings
 
@@ -72,7 +76,7 @@ The Reviewer must see only the reviewer tools, and the Developer only the develo
 | `DEV_URL` / `REV_URL` | `:4096` / `:4097` | OpenCode session APIs |
 | `DEV_SESSION` / `REV_SESSION` | auto-discovered | Explicit session IDs |
 
-`mcp-proxy.mjs` requires `BRIDGE_URL`; both OpenCode configs set the correct role endpoint.
+`mcp-proxy.mjs` requires `BRIDGE_URL`; both role configs set the correct role endpoint. Bridge session discovery retries for 60s (`DISCOVERY_TIMEOUT_MS`) and keeps retrying in the main loop until both sessions are found.
 
 ## Tests, lint, and CI
 

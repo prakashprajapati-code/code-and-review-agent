@@ -55,12 +55,12 @@ function formatPreviousFindings(findings) {
   return parts.join('\n')
 }
 
-export function buildReviewerPrompt({ cycleName, gateOk, previousFindings = [] }) {
+export function buildReviewerPrompt({ cycleName, gateOk, previousFindings = [], snapshotDir = `.review/${cycleName}` }) {
   return `${REVIEWER_RULES}
 
 Cycle: ${cycleName}
 Gate: ${gateOk ? 'passed' : 'failed'}
-Snapshot: .review/${cycleName}/ (changes.patch, files/, gate.txt)
+Snapshot: ${snapshotDir}/ (changes.patch, files/, gate.txt)
 
 ${formatPreviousFindings(previousFindings)}
 
@@ -72,7 +72,7 @@ Instructions:
 - Submit findings with bridge_submit_finding before submitting your verdict with bridge_submit_verdict.`
 }
 
-export function buildDeveloperPrompt({ cycleName, findings = [], gateFailure = null }) {
+export function buildDeveloperPrompt({ cycleName, findings = [], gateFailure = null, snapshotDir = `.review/${cycleName}` }) {
   const findingText = findings.length > 0
     ? findings.map(formatFinding).join('\n')
     : 'No review findings.'
@@ -83,7 +83,7 @@ export function buildDeveloperPrompt({ cycleName, findings = [], gateFailure = n
   return `You are the developer fixing review findings.
 
 Cycle: ${cycleName}
-Snapshot: .review/${cycleName}/
+Snapshot: ${snapshotDir}/
 
 Findings:
 ${findingText}
